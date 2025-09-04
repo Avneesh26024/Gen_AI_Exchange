@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 from vertexai.preview.generative_models import GenerativeModel, Tool, FunctionDeclaration
-from Retriever import retrieve_chunks
+from .Retriever import retrieve_chunks
 from prompts import retriever_prompt
 from langchain_core.tools import tool
 
@@ -42,12 +42,55 @@ def retriever_agent(query: str) -> Dict:
     # Send the user's query. The model will likely respond with a tool call.
     response = chat.send_message(query)
 
-    # The response will contain a function call to our evidence_retriever_func
-    function_call = response.candidates[0].content.parts[0].function_call
+    # Try to extract a function call from the model response. If the model
+    # didn't return a function call, fall back to directly using the query.
+    function_call = None
+    try:
+        # response shape may vary between SDK versions; guard against missing fields
+        candidate = None
+        if hasattr(response, "candidates") and response.candidates:
+            candidate = response.candidates[0]
+        elif hasattr(response, "candidate"):
+            candidate = response.candidate
 
-    # Now we need to call the function with the arguments provided by the model
-    # and get the results.
-    api_response = evidence_retriever_func(**function_call.args)
+        content_part = None
+        if candidate is not None and hasattr(candidate, "content"):
+            content = candidate.content
+            # content may have .parts or be a direct object
+            if hasattr(content, "parts") and content.parts:
+                content_part = content.parts[0]
+            else:
+                content_part = content
+
+        if content_part is not None and hasattr(content_part, "function_call"):
+            function_call = content_part.function_call
+    except Exception as e:
+        print(f"Warning: could not parse model response for function call: {e}")
+
+    api_response = None
+    if function_call is not None and getattr(function_call, "args", None):
+        args = function_call.args
+        # args may be a JSON string or a dict-like object
+        if isinstance(args, str):
+            import json
+            try:
+                args = json.loads(args)
+            except Exception:
+                # treat whole string as query_text
+                args = {"query_text": args}
+
+        if isinstance(args, dict):
+            # Map common parameter names if needed
+            # e.g., model might send {'query': '...', 'filters': {...}}
+            if "query_text" not in args and "query" in args:
+                args["query_text"] = args.pop("query")
+            api_response = evidence_retriever_func(**args)
+        else:
+            # Fallback to using the raw query
+            api_response = evidence_retriever_func(query_text=query)
+    else:
+        # No function call: just retrieve based on the plain query
+        api_response = evidence_retriever_func(query_text=query)
 
     # Send the result of the function call back to the model so it can formulate a final answer
     # Although in this case, the function result is what we want.
@@ -57,6 +100,6 @@ def retriever_agent(query: str) -> Dict:
 
 if __name__ == "__main__":
     # Example usage
-    query = "What are some popular North Indian snacks?"
+    query = "drinking water can cure cancer"
     result = retriever_agent.invoke({"query": query})
     print(result)

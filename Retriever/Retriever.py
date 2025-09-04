@@ -45,15 +45,91 @@ def retrieve_chunks(
 
         # Step 4: Build the request object for the vector search
         # --- Build metadata filter restrictions ---
+        # Normalize and support multiple filter formats coming from LLM/tool calls.
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # Check later whether we need _normalize_filters later or not.
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        def _normalize_filters(filters_input):
+            """
+            Accepts a variety of filter formats and returns a mapping of
+            {metadata_key: [allowed_values...]}. Handles:
+            - None
+            - dict like {"region": ["North India"], ...}
+            - dict with boolean operators: {"and": [{"region": "North India"}, {"dish_type": "snack"}]}
+            - protobuf-like objects that implement to_dict() or have __dict__
+            - JSON string
+            """
+            if not filters_input:
+                return {}
+            import json
+            # Try to convert to a plain dict first
+            try:
+                if isinstance(filters_input, str):
+                    filters_obj = json.loads(filters_input)
+                elif isinstance(filters_input, dict):
+                    filters_obj = filters_input
+                else:
+                    if hasattr(filters_input, "to_dict"):
+                        filters_obj = filters_input.to_dict()
+                    elif hasattr(filters_input, "__dict__"):
+                        filters_obj = dict(filters_input.__dict__)
+                    else:
+                        # fallback: try to convert directly
+                        filters_obj = dict(filters_input)
+            except Exception:
+                filters_obj = {}
+
+            normalized = {}
+            # If the LLM returned a boolean operator structure like {"and": [...]}
+            if isinstance(filters_obj, dict) and any(k.lower() in ("and", "or", "not") for k in filters_obj.keys()):
+                for op, items in filters_obj.items():
+                    if op.lower() in ("and", "or") and isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, dict):
+                                for kk, vv in item.items():
+                                    if isinstance(vv, list):
+                                        normalized.setdefault(kk, []).extend(vv)
+                                    else:
+                                        normalized.setdefault(kk, []).append(vv)
+                    elif op.lower() == "not":
+                        # For simplicity, treat NOT the same as inclusion (could be extended later).
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict):
+                                    for kk, vv in item.items():
+                                        if isinstance(vv, list):
+                                            normalized.setdefault(kk, []).extend(vv)
+                                        else:
+                                            normalized.setdefault(kk, []).append(vv)
+            else:
+                # Flat mapping: make sure every value is a list
+                if isinstance(filters_obj, dict):
+                    for kk, vv in filters_obj.items():
+                        if isinstance(vv, list):
+                            normalized.setdefault(kk, []).extend(vv)
+                        else:
+                            normalized.setdefault(kk, []).append(vv)
+
+            # Ensure all values are strings
+            for k in list(normalized.keys()):
+                normalized[k] = [str(x) for x in normalized[k] if x is not None]
+
+            return normalized
+
+        normalized_filters = _normalize_filters(filters)
         restricts = []
-        if filters:
-            for key, allowed_values in filters.items():
-                restricts.append(
-                    aiplatform_v1.IndexDatapoint.Restriction(
-                        namespace=key,
-                        allow_list=allowed_values
-                    )
+        for key, allowed_values in normalized_filters.items():
+            restricts.append(
+                aiplatform_v1.IndexDatapoint.Restriction(
+                    namespace=key,
+                    allow_list=allowed_values
                 )
+            )
 
         query_obj = aiplatform_v1.FindNeighborsRequest.Query(
             datapoint=aiplatform_v1.IndexDatapoint(
@@ -80,29 +156,50 @@ def retrieve_chunks(
             for neighbor in response.nearest_neighbors[0].neighbors:
                 datapoint = neighbor.datapoint
 
-                chunk_text = datapoint.embedding_metadata.get("chunk_text") or "[N/A]"
-                full_metadata = dict(datapoint.embedding_metadata)
+                # embedding_metadata may be None depending on the index; coerce to dict
+                embedding_metadata = datapoint.embedding_metadata or {}
+                # chunk_text stored under a metadata key, fall back to N/A
+                chunk_text = embedding_metadata.get("chunk_text") or embedding_metadata.get("text") or "[N/A]"
+                try:
+                    full_metadata = dict(embedding_metadata)
+                except Exception:
+                    # If it's not mapping-like, stringify it
+                    full_metadata = {"raw": str(embedding_metadata)}
 
-                # Extract filterable restricts from the datapoint
+                # Extract filterable restricts from the datapoint (may be None)
                 filterable_restricts = {}
-                for r in datapoint.restricts:
-                    filterable_restricts[r.namespace] = list(r.allow_list)
+                for r in getattr(datapoint, "restricts", []) or []:
+                    try:
+                        namespace = getattr(r, "namespace", None)
+                        allow_list = list(getattr(r, "allow_list", []))
+                        if namespace:
+                            filterable_restricts[namespace] = allow_list
+                    except Exception:
+                        # ignore malformed restrict entries
+                        continue
 
-                # Extract numeric restricts from the datapoint
+                # Extract numeric restricts from the datapoint (may be None)
                 numeric_restricts = {}
-                for nr in datapoint.numeric_restricts:
-                    # Storing just the populated value for simplicity
-                    value = nr.value_int or nr.value_float or nr.value_double
-                    numeric_restricts[nr.namespace] = value
+                for nr in getattr(datapoint, "numeric_restricts", []) or []:
+                    try:
+                        namespace = getattr(nr, "namespace", None)
+                        value = getattr(nr, "value_int", None) or getattr(nr, "value_float", None) or getattr(nr, "value_double", None)
+                        if namespace:
+                            numeric_restricts[namespace] = value
+                    except Exception:
+                        continue
 
                 retrieved_chunks.append({
-                    "id": datapoint.datapoint_id,
+                    "id": getattr(datapoint, "datapoint_id", getattr(datapoint, "id", None)),
                     "text": chunk_text,
-                    "distance": round(neighbor.distance, 4),
+                    "distance": round(getattr(neighbor, "distance", 0) or 0, 4),
                     "full_metadata": full_metadata,
                     "filterable_restricts": filterable_restricts,
                     "numeric_restricts": numeric_restricts
                 })
+        print(f"--- Retrieved {len(retrieved_chunks)} chunks. ---")
+        for chunk in retrieved_chunks:
+            print(f"--- Retrieved chunk text: {chunk['text']} ---")
         return retrieved_chunks
 
     except Exception as e:
@@ -159,4 +256,3 @@ if __name__ == '__main__':
         print("===============================================================")
     else:
         print("Could not retrieve any results for Test 2.")
-
