@@ -1,4 +1,3 @@
-from Verifier_Agent import verifier_tool
 from langgraph.graph import StateGraph
 from langchain_core.messages import HumanMessage
 from typing import TypedDict, List
