@@ -140,7 +140,7 @@ verifier_agent = graph.compile()
 
 # --- Tool wrapper ---
 # CHANGED: The tool wrapper is now a sync function
-# @tool
+@tool
 def verifier_tool(text_news: List[str], image_path: List[str] = None, save_to_vector_db: bool = True) -> str:
     """
         Fact-checks and verifies a list of claims using web search evidence.

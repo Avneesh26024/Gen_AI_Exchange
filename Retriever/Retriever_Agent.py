@@ -28,7 +28,7 @@ model = GenerativeModel(
 )
 
 # --- Step 3: Create the LangGraph-compatible tool ---
-@tool
+# @tool
 def retriever_agent(query: str) -> Dict:
     """
     A tool that acts as an intelligent retriever agent.
@@ -101,5 +101,5 @@ def retriever_agent(query: str) -> Dict:
 if __name__ == "__main__":
     # Example usage
     query = "drinking water can cure cancer"
-    result = retriever_agent.invoke({"query": query})
+    result = retriever_agent(query)
     print(result)

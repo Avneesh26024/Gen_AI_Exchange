@@ -1,10 +1,11 @@
+from logging import lastResort
 from Verifier_Agent import verifier_tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory, ChatVertexAI
 from prompts import main_prompt
-from typing import TypedDict, List
+from typing import TypedDict, List, Any, Dict
 from Retriever.Retriever_Agent import retriever_agent
 from Tools.Human_Response import human_response
 from langchain.prompts import ChatPromptTemplate
@@ -30,230 +31,126 @@ model = ChatVertexAI(
 )
 
 
-# --- Agent State Definition (Unchanged) ---
 class AgentState(TypedDict):
-    messages: List[BaseMessage]
-    verified_results: str
-    relevant_context: str
-    condensed_query: str
+    verified_claims: List[Dict[str, Any]]
+    messages: List[str]
 
+def router(state: AgentState) -> StateGraph:
 
-# --- All Node Definitions (Final Version) ---
-
-def router_entry_node(state: AgentState) -> AgentState:
-    """A simple node that acts as the starting point for the routing logic."""
-    print("---ENTERING GRAPH, PREPARING TO ROUTE---")
     return state
 
-
-def condense_query(state: AgentState) -> AgentState:
-    """Condenses the chat history and latest user query into a standalone question."""
-    print("---NODE: CONDENSING QUERY---")
-    user_message = state["messages"][-1].content
-    history = state["messages"][:-1]
-    if not history:
-        state["condensed_query"] = user_message
-        print(f"---CONDENSED QUERY (No history): {user_message}---")
-        return state
-
-    formatted_history = "\n".join(
-        [f"{'Human' if isinstance(msg, HumanMessage) else 'AI'}: {msg.content}" for msg in history])
-    condensing_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "Given the following conversation and a follow-up question, rephrase the follow-up question to be a standalone question, in its original language. Do not answer the question, just reformulate it."),
-        ("human", "Chat History:\n{chat_history}\n\nFollow Up Input: {question}"),
-    ])
-    condenser_chain = condensing_prompt | model
-    response = condenser_chain.invoke({"chat_history": formatted_history, "question": user_message})
-    state["condensed_query"] = response.content
-    print(f"---CONDENSED QUERY: {response.content}---")
-    return state
-
-
-# MODIFIED: Upgraded to a 3-way router for conversational flexibility
-def decide_route(state: AgentState) -> str:
-    """The initial router, now with a third 'general_conversation' option."""
-    print("---ROUTER: DECIDING INITIAL ROUTE---")
-    query = state["condensed_query"]
-    router_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         """You are an expert at routing user queries. Classify the query into one of three categories:
-
-         1. 'answer_from_context': The user is asking a clear question about a topic that can likely be answered by retrieving existing, verified information from a database.
-         2. 'verify_new_claim': The user is presenting a new, specific factual statement, URL, or piece of information that needs to be fact-checked from scratch using web searches.
-         3. 'general_conversation': The user is asking for an opinion, an elaboration on a previous point, a subjective question, or is making a simple conversational remark (e.g., "what?", "thanks", "tell me more", "why is that?").
-
-         Respond with *only* the category name."""),
-        ("human", "{user_query}"),
-    ])
-    router_chain = router_prompt | model
-    route = router_chain.invoke({"user_query": query})
-    route_content = route.content.strip().lower()
-
-    if "verify_new_claim" in route_content:
-        print("---ROUTE: To VERIFY_CLAIM---")
-        return "verify_claim"
-    elif "answer_from_context" in route_content:
-        print("---ROUTE: To ANSWER_FROM_CONTEXT---")
-        return "answer_from_context"
-    else:
-        print("---ROUTE: To GENERAL_CONVERSATION---")
-        return "general_conversation"
-
-
-def retrieve_context(state: AgentState) -> AgentState:
-    """Node to retrieve context using the condensed query."""
-    print("---NODE: RETRIEVE CONTEXT---")
-    query = state["condensed_query"]
-    context_result = retriever_agent(query)
-    chunks = context_result.get("retrieved_chunks", [])
-    context_texts = [chunk.get("text", "") for chunk in chunks]
-    state["relevant_context"] = "\n\n".join(context_texts)
-    print("---CONTEXT RETRIEVED---")
-    return state
-
-
-def check_relevance(state: AgentState) -> str:
-    """The relevance-checking router, using the condensed query."""
-    print("---ROUTER: CHECKING RELEVANCE---")
-    query = state["condensed_query"]
-    context = state["relevant_context"]
-    if not context.strip():
-        print("---ROUTE: No context found, must verify.---")
-        return "verify_claim"
-
-    relevance_prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a relevance-checking AI... Respond with only 'yes' or 'no'."),
-        ("human", "CONTEXT:\n{context}\n\nQUERY:\n{query}"),
-    ])
-    relevance_chain = relevance_prompt | model
-    response = relevance_chain.invoke({"context": context, "query": query})
-    if "yes" in response.content.strip().lower():
-        print("---ROUTE: Context is relevant. Proceeding to answer.---")
-        return "synthesize_answer"
-    else:
-        print("---ROUTE: Context is NOT relevant. Rerouting to verification.---")
-        return "verify_claim"
-
-
-def synthesize_answer(state: AgentState) -> AgentState:
-    """Node to synthesize a final answer using the condensed query."""
-    print("---NODE: SYNTHESIZE ANSWER---")
-    query = state["condensed_query"]
-    context = state["relevant_context"]
+def relevant_context_router(state: AgentState) -> AgentState:
+    verified_claims = state.get("verified_claims", [])
+    messages = state.get("messages", [])
+    last_message = messages[-1] if messages else ""
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant... Answer the user's question based *only* on the context."),
-        ("human", "Context:\n{context}\n\nUser Question:\n{query}"),
+        ("system", "You are an AI assistant which is a part of the misinformation classifier. You will be given a user message, chat history and a list of previously verified claims given by user. Your task is to determine if the latest user message can be answered using the  "
     ])
-    answer_chain = prompt | model
-    response_msg = answer_chain.invoke({"context": context, "query": query})
-    state["messages"].append(response_msg)
-    return state
 
-
-# NEW NODE: Handles conversational turns that don't need tools
-def handle_conversation(state: AgentState) -> AgentState:
-    """Node to handle general conversation without using heavy tools."""
-    print("---NODE: HANDLE CONVERSATION---")
-    condensed_query = state["condensed_query"]
-    messages_str = "\n".join([f"{msg.type}: {msg.content}" for msg in state["messages"]])
+def check_claims_router(state: AgentState) -> AgentState:
+    verified_claims = state.get("verified_claims", [])
+    messages = state.get("messages", [])
+    last_message = messages[-1] if messages else ""
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         "You are a helpful and conversational AI assistant. Answer the user's question based on the chat history."),
-        ("human",
-         "Here is the conversation history:\n{messages_str}\n\nBased on this, please answer the following question: {query}")
+        ("system", "You will be given a user message and a list of previously verified claims. "
+                   "Determine if the user message is a new claim that needs verification or if it has already been verified. "
+                   "If it is a new claim, respond with 'new_claim'. If it has already been verified, respond with 'already_verified'."),
+        ("user", "Previously verified claims: {verified_claims}"),
+        ("user", "User message: {last_message}"),
     ])
+
     chain = prompt | model
-    response_msg = chain.invoke({"messages_str": messages_str, "query": condensed_query})
-    state["messages"].append(response_msg)
+    response = chain.invoke({
+        "verified_claims": verified_claims,
+        "last_message": last_message
+    })
+
+    # Normalize response (depends on model type)
+    decision = response.content.strip().lower()
+
+    return decision
+
+def relevant_context(state: AgentState) -> AgentState:
+    # Extract from state
+    verified_claims = state.get("verified_claims", [])
+    messages = state.get("messages", [])
+    last_message = messages[-1] if messages else ""
+
+    # Build the prompt for query generation
+    retrieve_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "You are an intelligent evidence retriever agent. "
+            "Your task is to generate a clear and specific query for the retriever_agent, "
+            "which searches a vector database and returns relevant evidence chunks. "
+            "You are part of a misinformation classification system and you already know "
+            "which claims have been verified. "
+            "Given the list of verified claims, the latest user message, and the chat history, "
+            "produce ONLY the query text—no explanations, commentary, or formatting. "
+            "The query must be self-contained and directly usable by another agent."
+        ),
+        (
+            "user",
+            "Previously verified claims:\n{verified_claims}"
+        ),
+        (
+            "user",
+            "Latest user message:\n{last_message}"
+        ),
+        (
+            "user",
+            "Chat history:\n{messages}"
+        ),
+    ])
+
+    # Run the LLM chain to generate the retrieval query
+    chain = retrieve_prompt | model
+    response = chain.invoke({
+        "verified_claims": verified_claims,
+        "last_message": last_message,
+        "messages": messages,
+    })
+
+    # Extract the query from model output
+    query = response.content.strip()
+
+    # Pass the query to retriever agent
+    chunks = retriever_agent(query=query)
+
+    # Format retrieved chunks into a single string
+    formatted = ""
+    for chunk in chunks:
+        formatted += f"Retrieved Chunk Content: {chunk.get('text', '')}\n"
+        formatted += (
+            "Additional Information Related to the Chunk: "
+            f"{chunk.get('full_metadata', '')}, "
+            f"{chunk.get('filterable_restricts', '')}, "
+            f"{chunk.get('numeric_restricts', '')}\n"
+        )
+
+    # Store in state
+    state["relevant_context"] = formatted
     return state
 
+def classify_claim(state: AgentState) -> AgentState:
+    verified_claims = state.get("verified_claims", [])
+    messages = state.get("messages", [])
+    last_message = messages[-1] if messages else ""
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are an AI agent which is a part of the misinformation classification system. You will be given the list of claims which have been verified till now. You will be given conversation history and the latest user message. You have to extract the claim/claims from the last user message if any. The output should be in a list format. If there is no claim in the last user message, return an empty list. Separate each claim with a #. Do not include any other text."),
+        ("user", "Previously verified claims: {verified_claims}"),
+        ("user", "Conversation history: {messages}"),
+        ("user", "Latest user message: {last_message}"),
+        ])
+    chain = prompt | model
+    response = chain.invoke({
+        "verified_claims": verified_claims,
+        "messages": messages,
+        "last_message": last_message
+    })
+    claims_text = response.content.strip()
+    claims = [claim.strip() for claim in claims_text.split("#") if claim.strip()]
+    classification = verifier_tool.invoke(claims=claims, save_to_vector_db=True)
+    state["verified_claims"].extend(classification)
 
-# MODIFIED: Fixed to use condensed_query to prevent context loss
-def verify_and_respond(state: AgentState) -> AgentState:
-    """Node for ReAct verification, now using the condensed query."""
-    print("---NODE: VERIFY NEW CLAIM (ReAct Agent)---")
-    react_agent_executor = create_react_agent(model=model, tools=[verifier_tool, human_response], prompt=main_prompt())
-
-    # CRITICAL FIX: Replace the last user message with the condensed query
-    # to give the ReAct agent the full, unambiguous context.
-    messages_for_agent = state["messages"][:-1] + [HumanMessage(content=state["condensed_query"])]
-
-    agent_output = react_agent_executor.invoke({"messages": messages_for_agent})
-
-    all_agent_messages = agent_output.get("messages", [])
-    verification_results = [str(msg.content) for msg in all_agent_messages if isinstance(msg, ToolMessage)]
-    if verification_results:
-        existing_results = state.get("verified_results", "")
-        new_results_str = "\n".join(verification_results)
-        state[
-            "verified_results"] = f"{existing_results}\n---\n{new_results_str}" if existing_results else new_results_str
-        print(f"--- 📝 VERIFICATION RESULT SAVED TO STATE ---")
-
-    final_ai_message = all_agent_messages[-1]
-    state["messages"].append(final_ai_message)
-    return state
-
-
-# --- 4. Graph Definition (Final Version) ---
-graph = StateGraph(AgentState)
-
-graph.add_node("router", router_entry_node)
-graph.add_node("condense_query", condense_query)
-graph.add_node("retrieve_context", retrieve_context)
-graph.add_node("synthesize_answer", synthesize_answer)
-graph.add_node("verify_claim", verify_and_respond)
-graph.add_node("handle_conversation", handle_conversation)  # Added new node
-
-graph.set_entry_point("router")
-graph.add_edge("router", "condense_query")
-
-# MODIFIED: Updated conditional routing to include the new conversational path
-graph.add_conditional_edges(
-    "condense_query",
-    decide_route,
-    {
-        "answer_from_context": "retrieve_context",
-        "verify_claim": "verify_claim",
-        "general_conversation": "handle_conversation",
-    },
-)
-graph.add_conditional_edges(
-    "retrieve_context",
-    check_relevance,
-    {
-        "synthesize_answer": "synthesize_answer",
-        "verify_claim": "verify_claim",
-    },
-)
-
-graph.add_edge("synthesize_answer", END)
-graph.add_edge("verify_claim", END)
-graph.add_edge("handle_conversation", END)  # Added new end point
-
-agent = graph.compile()
-agent.get_graph().print_ascii()
-
-# --- 5. Main Chat Loop (Unchanged) ---
-if __name__ == "__main__":
-    initial_state: AgentState = {"messages": [], "verified_results": "", "relevant_context": "", "condensed_query": ""}
-    print("✅ Misinfo Classifier Agent started. Type 'exit' or 'quit' to stop.")
-    try:
-        while True:
-            user_input = input("You: ").strip()
-            if not user_input or user_input.lower() in ("exit", "quit", "q"): break
-
-            current_messages = initial_state.get("messages", [])
-            current_messages.append(HumanMessage(content=user_input))
-
-            agent_input = {"messages": current_messages}
-            final_state = agent.invoke(agent_input)
-
-            last_message = final_state["messages"][-1]
-            print(f"Bot: {last_message.content}")
-            initial_state = final_state
-    except KeyboardInterrupt:
-        print("\nInterrupted. Exiting.")
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
