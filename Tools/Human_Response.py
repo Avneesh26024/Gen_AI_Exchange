@@ -1,6 +1,4 @@
-from langgraph.tools import tool
-
-
+from langchain_core.tools import tool
 @tool
 def human_response(prompt: str) -> str:
     """
