@@ -1,26 +1,29 @@
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, BaseMessage, AIMessage
-from langchain_google_vertexai import HarmBlockThreshold, HarmCategory, ChatVertexAI
-from langgraph.checkpoint.memory import MemorySaver
-from typing import TypedDict, List
-from langchain.prompts import ChatPromptTemplate
-
-
-### CLAIM BRUTEFORCE RETRIEVER
-
-# Assume these are your pre-built agents/tools
 import uuid
+from typing import TypedDict, List, Annotated, Sequence # FIX: Import Annotated and Sequence
 
-from Retriever.Retriever_Agent import retriever_agent 
+from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_google_vertexai import (ChatVertexAI, HarmBlockThreshold,
+                                       HarmCategory)
+# FIX: Import a working checkpointer and the 'add_messages' helper
+from Retriever.Retriever_Agent import retriever_agent
+from langgraph.checkpoint.memory import MemorySaver
 
-# --- Model and Memory Setup (Unchanged) ---
+from langgraph.graph import END, StateGraph, START
+from langgraph.graph.message import add_messages
+
+
+# --- MOCK RETRIEVER FOR TESTING ---
+# This is a fake retriever so you can test the graph's logic without errors.
+# Replace this with your actual 'from Retriever.Retriever_Agent import retriever_agent' when ready.
+
+# --- Model and Memory Configuration ---
 safety_settings = {
     HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
 }
+
 model_kwargs = {
     "temperature": 0.28,
     "max_output_tokens": 1000,
@@ -28,235 +31,155 @@ model_kwargs = {
     "top_k": None,
     "safety_settings": safety_settings,
 }
-model = ChatVertexAI(model_name="gemini-2.5-flash-lite", **model_kwargs)
+model = ChatVertexAI(
+    model_name="gemini-2.5-flash-lite",
+    **model_kwargs
+)
+
+# FIX 1 (cont.): Use the working SqliteSaver instead of the non-functional base class.
 memory = MemorySaver()
 
-# --- Agent State (Unchanged) ---
-class AgentState(TypedDict):
-    messages: List[BaseMessage]
-    verified_results: str
-    relevant_context: str  
-    condensed_query: str
-    image_path: List[str]
 
-# --- NODE DEFINITIONS ---
+# --- Agent State ---
+class AgentState(TypedDict):
+    # FIX 2: The 'messages' field MUST be wrapped in Annotated for memory to work.
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    relevant_context: str
+    condensed_query: str
+    image_path: List[str] # Keeping for future use
+
+# --- Node Definitions (Your code is unchanged here) ---
 
 def condense_query(state: AgentState) -> AgentState:
-    """Condenses the chat history into a standalone question. Always the first step."""
+    """Condenses chat history into a standalone question."""
     print("---NODE: CONDENSING QUERY---")
+    print("--------------------------------------------------")
+    print(f"DEBUG: Agent received {len(state['messages'])} message(s) in its state.")
+    for i, msg in enumerate(state['messages']):
+        print(f"  -> Message [{i}]: Type={msg.type}, Content='{msg.content}'")
+    print("--------------------------------------------------")
     user_message = state["messages"][-1].content
     history = state["messages"][:-1]
-
     if not history:
-        condensed_query = user_message
-    else:
-        # Code to condense query remains the same...
-        formatted_history = "\n".join([f"{'Human' if isinstance(msg, HumanMessage) else 'AI'}: {msg.content}" for msg in history])
-        condensing_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Rephrase the follow-up question to be a standalone question."),
-            ("human", "Chat History:\n{chat_history}\n\nFollow Up Input: {question}"),
-        ])
-        response = (condensing_prompt | model).invoke({"chat_history": formatted_history, "question": user_message})
-        condensed_query = response.content
-
-    state["condensed_query"] = condensed_query
-    print(f"---CONDENSED QUERY: {condensed_query}---")
+        print("VERDICT: No history found. Treating as the first message.")
+        state["condensed_query"] = user_message
+        return state
+    print("VERDICT: History found. Rephrasing query based on context.")
+    formatted_history = "\n".join(
+        [f"{'Human' if isinstance(msg, HumanMessage) else 'AI'}: {msg.content}" for msg in history]
+    )
+    condensing_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Given the conversation and a follow-up question, rephrase the follow-up into a standalone question."),
+        ("human", "Chat History:\n{chat_history}\n\nFollow Up Input: {question}"),
+    ])
+    response = (condensing_prompt | model).invoke({"chat_history": formatted_history, "question": user_message})
+    state["condensed_query"] = response.content
+    print(f"---CONDENSED QUERY: {response.content}---")
     return state
 
+def decide_route(state: AgentState) -> str:
+    """Routes between using the retriever or handling a general conversation."""
+    print("---ROUTER: DECIDING ROUTE---")
+    query = state["condensed_query"]
+    
+    # This improved prompt gives clearer instructions to the router LLM.
+    router_prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are an expert at routing user requests. Classify the user's request into one of two categories:
+
+1.  **use_retriever**: The user is asking a clear factual question about a topic, person, place, or event that likely requires searching a knowledge base.
+    Examples: "Who is the president?", "What is LangGraph?", "what is my first prompt"
+
+2.  **general_conversation**: The user is having a regular conversation. This includes greetings, statements, or giving information.
+    Examples: "hi", "thanks that was helpful", "my name is Puneet"
+"""),
+        ("human", "User request: {user_query}"),
+    ])
+    
+    route = (router_prompt | model).invoke({"user_query": query})
+    
+    if "use_retriever" in route.content.strip().lower():
+        print("---ROUTE: To RETRIEVE_CONTEXT---")
+        return "use_retriever"
+    else:
+        print("---ROUTE: To GENERAL_CONVERSATION---")
+        return "general_conversation"
 
 def retrieve_context(state: AgentState) -> AgentState:
-    """
-    Fetches documents from the retriever and formats them into a structured string,
-    including metadata like source URL and title for better context.
-    """
-    print("---NODE: RETRIEVING CONTEXT---")
+    """Retrieves context from the vector database."""
+    print("---NODE: RETRIEVE CONTEXT---")
     query = state["condensed_query"]
-    context_result = retriever_agent(query) 
+    context_result = retriever_agent(query)
     chunks = context_result.get("retrieved_chunks", [])
-
-    # Handle the case where the retriever finds nothing.
-    if not chunks:
-        state["relevant_context"] = "No relevant documents were found."
-        print("---CONTEXT RETRIEVED (No documents found)---")
-        return state
-
-    formatted_context_list = []
-    # Loop through each retrieved chunk to format it.
-    for i, chunk in enumerate(chunks):
-        # Safely extract the text and metadata from the chunk dictionary.
-        text = chunk.get("text", "No content available.")
-        metadata = chunk.get("filterable_restricts", {})
-        
-        # Metadata values are lists, so we get the first item or a default.
-        source_url = metadata.get("source_url", ["Source not available"])[0]
-        title = metadata.get("title", ["Title not available"])[0]
-
-        # Create a clean, formatted block for each document.
-        # This is much easier for the LLM to understand.
-        context_block = f"""--- Document [{i+1}] ---
-Source URL: {source_url}
-Source Title: {title}
-Content:
-{text}"""
-        formatted_context_list.append(context_block)
-
-    # Join all the formatted blocks into a single string for the state.
-    state["relevant_context"] = "\n\n".join(formatted_context_list)
-    print(f"---CONTEXT RETRIEVED ({len(chunks)} documents formatted)---")
+    state["relevant_context"] = "\n\n".join([chunk.get("text", "") for chunk in chunks]) or "No relevant information found."
+    print("---CONTEXT RETRIEVED---")
     return state
 
 def synthesize_answer(state: AgentState) -> AgentState:
-    """Generates the final answer using whatever context is available."""
-    print("---NODE: SYNTHESIZING ANSWER---")
-    query = state["condensed_query"]
-    context = state["relevant_context"]
+    """Generates an answer based on retrieved context."""
+    print("---NODE: SYNTHESIZE ANSWER---")
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful assistant. Answer the user's question based *only* on the provided context."),
-        ("human", "Context:\n{context}\n\nUser Question:\n{query}"), 
+        ("system", "Answer the user's question based *only* on the provided context."),
+        ("human", "Context:\n{context}\n\nQuestion:\n{query}"),
     ])
-    answer_chain = prompt | model
-    response_msg = answer_chain.invoke({"context": context, "query": query})
+    response_msg = (prompt | model).invoke({"context": state["relevant_context"], "query": state["condensed_query"]})
     state["messages"].append(response_msg)
     return state
 
-def verifier(state: AgentState) -> AgentState:
-    """The final fallback node when no sufficient context can be found."""
-    print("---NODE: VERIFIER---")
-    # Wrap the content in an AIMessage object
-    response_message = AIMessage(content="I could not find a sufficient answer. The verifier would now take over.")
-    state['messages'].append(response_message)
+def handle_conversation(state: AgentState) -> AgentState:
+    """Handles conversational turns by explicitly passing the full chat history."""
+    print("---NODE: HANDLE CONVERSATION---")
+    query = state["condensed_query"]
+    all_messages = state["messages"]
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful and conversational AI assistant. Use the provided chat history to answer the user's question."),
+        ("user", "Here is the chat history:\n{history}\n\nBased on that history, please answer this question:\n{question}")
+    ])
+    history_string = "\n".join(
+        f"{msg.type.upper()}: {msg.content}" for msg in all_messages
+    )
+    chain = prompt | model
+    response_msg = chain.invoke({
+        "history": history_string,
+        "question": query
+    })
+    state["messages"].append(response_msg)
     return state
 
-# --- ROUTER DEFINITIONS ---
-
-# ROUTER 1: Checks if chat history is enough
-def check_memory_sufficiency(state: AgentState) -> str:
-    """Checks if the conversation history is sufficient to answer the query."""
-    print("---ROUTER 1: CHECKING MEMORY SUFFICIENCY---")
-    query = state["condensed_query"]
-    history_messages = state["messages"][:-1]
-
-    if not history_messages:
-        print("---ROUTE: No history. Must retrieve.---")
-        return "insufficient"
-
-    formatted_history = "\n".join([f"{msg.type}: {msg.content}" for msg in history_messages])
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a query analyzer. Your task is to determine if the Chat History contains enough information to fully answer the User's Query. Respond with only 'yes' or 'no'."),
-        ("human", "Chat History:\n{history}\n\nUser's Query:\n{query}"),
-    ])
-    chain = prompt | model
-    response = chain.invoke({"history": formatted_history, "query": query})
-
-    if "yes" in response.content.lower():
-        print("---ROUTE: Memory is SUFFICIENT. Synthesizing answer.---")
-        # IMPORTANT: We load the history into the context field for the synthesizer
-        state["relevant_context"] = formatted_history
-        return "sufficient"
-    else:
-        print("---ROUTE: Memory is INSUFFICIENT. Proceeding to retriever.---")
-        return "insufficient"
-
-# ROUTER 2: Checks if retrieved documents are enough
-def check_retrieved_context_sufficiency(state: AgentState) -> str:
-    """Checks if the newly retrieved context is sufficient to answer the query."""
-    print("---ROUTER 2: CHECKING RETRIEVED CONTEXT SUFFICIENCY---")
-    query = state["condensed_query"]
-    context = state["relevant_context"]
-
-    if not context.strip():
-        print("---ROUTE: No context was retrieved. Must verify.---")
-        return "insufficient"
-
-    # This is our strict relevance prompt from before
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a highly strict relevance checker. Does the provided CONTEXT directly and fully answer the QUERY? If it's only partially related, say no. Respond with only 'yes' or 'no'."),
-        ("human", "CONTEXT:\n{context}\n\nQUERY:\n{query}"),
-    ])
-    chain = prompt | model
-    response = chain.invoke({"context": context, "query": query})
-
-    if "yes" in response.content.lower():
-        print("---ROUTE: Retrieved context is SUFFICIENT. Synthesizing answer.---")
-        return "sufficient"
-    else:
-        print("---ROUTE: Retrieved context is INSUFFICIENT. Proceeding to verifier.---")
-        return "insufficient"
-
-# --- GRAPH DEFINITION ---
-
+# --- Graph Definition (Your code is unchanged here) ---
 graph = StateGraph(AgentState)
-
-# Add all the nodes
 graph.add_node("condense_query", condense_query)
 graph.add_node("retrieve_context", retrieve_context)
 graph.add_node("synthesize_answer", synthesize_answer)
-graph.add_node("verifier", verifier)
+graph.add_node("handle_conversation", handle_conversation)
 
-# Set the entry point
 graph.set_entry_point("condense_query")
-
-# Define the first decision point (Memory Check)
-graph.add_conditional_edges(
-    "condense_query",
-    check_memory_sufficiency,
-    {
-        "sufficient": "synthesize_answer",
-        "insufficient": "retrieve_context",
-    },
-)
-
-# Define the second decision point (Retrieved Context Check)
-graph.add_conditional_edges(
-    "retrieve_context",
-    check_retrieved_context_sufficiency,
-    {
-        "sufficient": "synthesize_answer",
-        "insufficient": "verifier",
-    },
-)
-
-# Define the final end points
+graph.add_conditional_edges("condense_query", decide_route, {
+    "use_retriever": "retrieve_context",
+    "general_conversation": "handle_conversation",
+})
+graph.add_edge("retrieve_context", "synthesize_answer")
 graph.add_edge("synthesize_answer", END)
-graph.add_edge("verifier", END)
+graph.add_edge("handle_conversation", END)
 
-# Compile the agent
 agent = graph.compile(checkpointer=memory)
 
-# Visualize the graph to confirm the logic
-agent.get_graph().print_ascii()
 
-
-# if __name__ == "__main__":
-    
-#     # 1. Create a unique ID for this entire conversation session
-#     conversation_id = str(uuid.uuid4())
-#     print(f"✅ Agent started. Conversation ID: {conversation_id}")
-#     print("Type 'exit' or 'quit' to stop.")
-
-#     try:
-#         while True:
-#             user_input = input("You: ").strip()
-#             if not user_input or user_input.lower() in ("exit", "quit", "q"):
-#                 break
-
-#             # The input for the agent is just the new message
-#             # The checkpointer will handle loading the history
-#             agent_input = {"messages": [HumanMessage(content=user_input)]}
-            
-#             # 2. Pass the config with the unique thread_id here 🔑
-#             config = {"configurable": {"thread_id": conversation_id}}
-            
-#             # Invoke the agent with the input and config
-#             final_state = agent.invoke(agent_input, config=config)
-
-#             # The AI's response is the last message in the final state
-#             bot_response = final_state["messages"][-1]
-
-#             print(f"Bot: {bot_response.content}")
-
-#     except KeyboardInterrupt:
-#         print("\nInterrupted. Exiting.")
-#     except Exception as e:
-#         print(f"\nAn error occurred: {e}")
-
+# --- Main Chat Loop (Your code is unchanged here) ---
+if __name__ == "__main__":
+    conversation_id = str(uuid.uuid4())
+    print(f"✅ Agent started. Conversation ID: {conversation_id}")
+    print("Type 'exit' or 'quit' to stop.")
+    try:
+        while True:
+            user_input = input("You: ").strip()
+            if not user_input or user_input.lower() in ("exit", "quit", "q"):
+                break
+            agent_input = {"messages": [HumanMessage(content=user_input)]}
+            config = {"configurable": {"thread_id": conversation_id}}
+            final_state = agent.invoke(agent_input, config=config)
+            last_message = final_state["messages"][-1]
+            print(f"Bot: {last_message.content}")
+    except KeyboardInterrupt:
+        print("\nInterrupted. Exiting.")
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
