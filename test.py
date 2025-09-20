@@ -44,7 +44,7 @@ def relevant_context_router(state: AgentState) -> AgentState:
     messages = state.get("messages", [])
     last_message = messages[-1] if messages else ""
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are an AI assistant which is a part of the misinformation classifier. You will be given a user message, chat history and a list of previously verified claims given by user. Your task is to determine if the latest user message can be answered using the  "
+        ("system", "You are an AI assistant which is a part of the misinformation classifier. You will be given a user message, chat history and a list of previously verified claims given by user. Your task is to determine if the latest user message can be answered using the  ")
     ])
 
 def check_claims_router(state: AgentState) -> AgentState:

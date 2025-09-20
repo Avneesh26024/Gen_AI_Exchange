@@ -4,6 +4,8 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory, ChatVertexAI
 from prompts import main_prompt
+from langgraph.checkpoint.memory import MemorySaver
+
 from typing import TypedDict, List
 from Retriever.Retriever_Agent import retriever_agent
 from Tools.Human_Response import human_response
@@ -63,6 +65,7 @@ def condense_query(state: AgentState) -> AgentState:
         return state
 
     formatted_history = "\n".join(
+
         [f"{'Human' if isinstance(msg, HumanMessage) else 'AI'}: {msg.content}" for msg in history])
     condensing_prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -201,6 +204,8 @@ def verify_and_respond(state: AgentState) -> AgentState:
     state["messages"].append(final_ai_message)
     return state
 
+memory = MemorySaver()
+
 
 # --- 4. Graph Definition (Final Version) ---
 graph = StateGraph(AgentState)
@@ -237,42 +242,29 @@ graph.add_edge("synthesize_answer", END)
 graph.add_edge("verify_claim", END)
 graph.add_edge("handle_conversation", END)  # Added new end point
 
-<<<<<<< HEAD
-agent = graph.compile()
-=======
 agent = graph.compile(checkpointer=memory)
 
 
 
 
 
->>>>>>> ac7e9d7 (Sync local files)
 agent.get_graph().print_ascii()
 
 # --- 5. Main Chat Loop (Unchanged) ---
-if __name__ == "__main__":
-    initial_state: AgentState = {"messages": [], "verified_results": "", "relevant_context": "", "condensed_query": ""}
-    print("✅ Misinfo Classifier Agent started. Type 'exit' or 'quit' to stop.")
-    try:
-        while True:
-            user_input = input("You: ").strip()
-            if not user_input or user_input.lower() in ("exit", "quit", "q"): break
+# if __name__ == "__main__":
+#     initial_state: AgentState = {"messages": [], "verified_results": "", "relevant_context": "", "condensed_query": ""}
+#     print("✅ Misinfo Classifier Agent started. Type 'exit' or 'quit' to stop.")
+#     try:
+#         while True:
+#             user_input = input("You: ").strip()
+#             if not user_input or user_input.lower() in ("exit", "quit", "q"): break
 
-            current_messages = initial_state.get("messages", [])
-            current_messages.append(HumanMessage(content=user_input))
+#             current_messages = initial_state.get("messages", [])
+#             current_messages.append(HumanMessage(content=user_input))
 
-            agent_input = {"messages": current_messages}
-            final_state = agent.invoke(agent_input)
+#             agent_input = {"messages": current_messages}
+#             final_state = agent.invoke(agent_input)
 
-<<<<<<< HEAD
-            last_message = final_state["messages"][-1]
-            print(f"Bot: {last_message.content}")
-            initial_state = final_state
-    except KeyboardInterrupt:
-        print("\nInterrupted. Exiting.")
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
-=======
 #             last_message = final_state["messages"][-1]
 #             print(f"Bot: {last_message.content}")
 #             initial_state = final_state
@@ -283,4 +275,3 @@ if __name__ == "__main__":
 
 
 
->>>>>>> ac7e9d7 (Sync local files)
