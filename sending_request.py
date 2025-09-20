@@ -1,5 +1,8 @@
 import requests
+from sound import transcribe_streaming
 import streamlit as st
+
+import base64 # <-- IMPORT THIS
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Misinformation Classifier", layout="wide")
@@ -22,17 +25,28 @@ for message in st.session_state.messages:
 
 user_input = st.chat_input("What would you like to verify?")
 
+uploaded_file = st.file_uploader("Upload an image (optional)", type=["png", "jpg", "jpeg"])
+
+
 if user_input:
    
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
+    image_base64_data = None
+    if uploaded_file is not None:
+        image_bytes = uploaded_file.getvalue()
+        image_base64_data = base64.b64encode(image_bytes).decode('utf-8')
+
+    # CHANGED: The payload is a simple JSON again
     payload = {
         "message": user_input,
-        "conversation_id": st.session_state.conversation_id
+        "conversation_id": st.session_state.conversation_id,
+        "image_data": image_base64_data 
     }
 
+    
     try:
         with st.spinner("Analyzing..."):
             response = requests.post(CHAT_API_URL, json=payload)

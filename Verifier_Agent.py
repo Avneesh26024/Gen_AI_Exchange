@@ -1,19 +1,23 @@
-from typing import TypedDict, List, Any, Dict
-from Tools.Sync_Wrappers import web_search_tool, reverse_image_search
+# verifier_agent.py (Your original code is fine, just ensure the @tool is active if needed)
+import asyncio
+from typing import TypedDict, List
 from Utils.vector_db import insert_into_vertex_vector_db
 from Utils.evidence_chunker import chunk_text_by_paragraph
 from langgraph.graph import StateGraph
+from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import AIMessage
 from prompts import verifier_prompt, content_summarizer_prompt
 from langchain_google_vertexai import HarmBlockThreshold, HarmCategory, ChatVertexAI
 from langchain_core.tools import tool
-
+from prompts import title_url_inference_prompt
 
 from vertexai import init
 init(project="gen-ai-hackathon-470012", location="us-central1")
 
-
-# This function remains unchanged
+# ----------------------
+# Helpers
+# ----------------------
+# (Your helper functions remain the same)
 def extract_final_ai_message(response: dict) -> str:
     messages = response.get("messages", [])
     for m in reversed(messages):
@@ -27,8 +31,10 @@ def extract_final_ai_message(response: dict) -> str:
                     return content
     return None
 
+# ----------------------
+# Model settings
+# ----------------------
 
-# These settings remain unchanged
 safety_settings = {
     HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
@@ -44,12 +50,10 @@ model_kwargs = {
     "safety_settings": safety_settings,
 }
 
-# The summarizer_llm and AgentState remain unchanged
 summarizer_llm = ChatVertexAI(
-    model_name="gemini-2.5-flash-lite", # Using a stable model name
+    model_name="gemini-2.5-flash-lite", # Note: gemini-2.5-flash-lite may not be a valid model name
     **model_kwargs
 )
-
 
 class AgentState(TypedDict):
     text_news: List[str]
@@ -59,78 +63,108 @@ class AgentState(TypedDict):
     save_to_vector_db: bool
     verified_results: str
 
-
-# This function is now correctly defined as async
-def text_evidence_collection(state: AgentState) -> AgentState:
+# ----------------------
+# Async nodes
+# ----------------------
+# (Your async nodes remain the same)
+async def text_evidence_collection(state: AgentState) -> AgentState:
     print("-> Starting text evidence collection...")
     claims = state["text_news"]
     formatted = ""
+    db_tasks = []
+    from Tools.Web_Search import web_search_tool as async_web_search_tool
+    print('doing web search')
     for claim in claims:
         formatted += f"Claim: {claim}\n"
-        # The async web_search_tool is awaited
-        search_result = web_search_tool(claim)
-        print(f"-> Found {len(search_result)} results for claim: '{claim}'")
+        print("IT IS DOING STUFF WAIT PLS") 
+        search_result = await async_web_search_tool(claim)
+        print(search_result)
+        print("YOU SNOOZE U LOOSE")
         for result in search_result:
-            if not result["scrapable"]:
-                continue
-            # Note: .invoke() on an LLM is synchronous. For full async, use .ainvoke()
-            summarization_prompt = content_summarizer_prompt(result["content"])
-            response_message = summarizer_llm.invoke(summarization_prompt)
+            if result['scrapable']!=False:
+                summarization_prompt = content_summarizer_prompt(result["content"])
+                response_message = await summarizer_llm.ainvoke(summarization_prompt)
+            else:
+                title = result.get('title', '')
+                url = result.get('url', '')
+                prompt = title_url_inference_prompt(title, url)
+                response_message = await summarizer_llm.ainvoke(prompt)
+
+            print("DOIING SUMMARY")
+            print("DONE SUMMARY")
+
+            
             summary = response_message.content
-            formatted += f"Result: {summary}\n"
-            formatted += f"Title: {result['title']}\n"
-            formatted += f"URL: {result['url']}\n"
-            if state["save_to_vector_db"]:
+
+            print("summary",summary)
+            
+            formatted += f"Result: {summary}\nTitle: {result['title']}\nURL: {result['url']}\n"
+
+            
+            if state["save_to_vector_db"] and result.get('content'):
                 metadata = {"claim": claim, "source_url": result["url"], "title": result["title"]}
-                chunks = chunk_text_by_paragraph(result["content"])
+
+                chunks = chunk_text_by_paragraph(result['content'])
+
                 for chunk in chunks:
-                    # Assuming insert_into_vertex_vector_db can be async or is fast
-                    insert_into_vertex_vector_db([chunk], [metadata])
+                    task = asyncio.to_thread(insert_into_vertex_vector_db, [chunk], [metadata])
+                    db_tasks.append(task)
+
+        
+    if db_tasks:
+        print(f"-> Starting {len(db_tasks)} DB insertions in the background...")
+        await asyncio.gather(*db_tasks)
+        print("-> DB insertions complete.")    
+    print(formatted)
     state["text_with_evidence"] = formatted
     return state
 
-
-# This synchronous node can remain as is. LangGraph handles mixed async/sync nodes.
-def image_analysis(state: AgentState) -> AgentState:
+async def image_analysis(state: AgentState) -> AgentState:
     print("-> Starting image analysis...")
-    number = 0
     if not state["image_path"]:
         return state
-    for images in state["image_path"]:
-        number += 1
-        print(f"-> Starting image analysis for image: {images}{number}...")
+    db_tasks = []
+    from Tools.Reverse_Image_Search import reverse_image_search as async_reverse_image_search
+    for idx, image in enumerate(state["image_path"], start=1):
+        print(f"-> Starting image analysis for image {idx}: {image}")
         formatted = ""
-        search_results = reverse_image_search(images)
+        search_results = await async_reverse_image_search.ainvoke({"image_path": image})
         if search_results.get("status") == "success":
             print(f"-> Found {len(search_results['scraped_results'])} results from reverse image search.")
             for result in search_results["scraped_results"]:
                 if not result["content"]:
-                    print(f"-> Skipping summarization for URL with no content: {result['url']}")
                     continue
-                response_message = summarizer_llm.invoke(content_summarizer_prompt(result["content"]))
+                response_message = await summarizer_llm.ainvoke(content_summarizer_prompt(result["content"]))
                 summary = response_message.content
-                formatted += f"Image {number}\nURL: {result['url']}\nContent: {summary}\n"
+                formatted += f"Image {idx}\nURL: {result['url']}\nContent: {summary}\n"
                 if state["save_to_vector_db"]:
                     chunks = chunk_text_by_paragraph(result["content"])
                     for chunk in chunks:
-                        metadata = {"image_id": number, "source_url": result["url"]}
-                        insert_into_vertex_vector_db([chunk], [metadata])
+                        metadata = {"image_id": idx, "source_url": result["url"]}
+                        task = asyncio.to_thread(insert_into_vertex_vector_db, [chunk], [metadata])
+                        db_tasks.append(task)
         else:
             print("-> No results found from reverse image search.")
         state["image_analysis"] += formatted
+        
+    if db_tasks:
+        print(f"-> Starting {len(db_tasks)} image-related DB insertions in the background...")
+        await asyncio.gather(*db_tasks)
+        print("-> Image DB insertions complete.")
+
     return state
 
-
-def verify_claims(state: AgentState) -> AgentState:
+async def verify_claims(state: AgentState) -> AgentState:
     print("-> Starting claim verification...")
     verifier = verifier_prompt(state)
-    response_message = summarizer_llm.invoke(verifier)
-    status = response_message.content
-    state["verified_results"] = status
+    response_message = await summarizer_llm.ainvoke(verifier)
+    state["verified_results"] = response_message.content
     return state
 
-
-# Graph definition remains the same
+# ----------------------
+# Graph
+# ----------------------
+memory = InMemorySaver()
 graph = StateGraph(AgentState)
 graph.add_node("text_evidence_collection", text_evidence_collection)
 graph.add_node("image_analysis", image_analysis)
@@ -139,33 +173,19 @@ graph.add_edge("text_evidence_collection", "image_analysis")
 graph.add_edge("image_analysis", "verify_claims")
 graph.set_entry_point("text_evidence_collection")
 graph.set_finish_point("verify_claims")
-verifier_agent = graph.compile()
+verifier_agent = graph.compile(checkpointer=memory)
 
+# ----------------------
+# Tool wrapper
+# ----------------------
 
-# --- Tool wrapper ---
-# CHANGED: The tool wrapper is now a sync function
 @tool
-def verifier_tool(text_news: List[str], image_path: List[str] = None, save_to_vector_db: bool = True) -> str:
-    """
-        Fact-checks and verifies a list of claims using web search evidence.
-
-        Use this tool to determine the factual accuracy of statements, news headlines,
-        or user questions like "Is it true that...?". It is the primary tool for
-        debunking misinformation or confirming facts. The tool returns a structured
-        JSON output that you can parse to answer the user's query.
-
-        Args:
-            text_news (List[str]): A list of strings, where each string is a
-                single, complete claim to be verified. You MUST provide the input
-                as a list of strings.
-                Example: ["The Eiffel Tower is located in Berlin.", "The 2028 Olympics will be in Los Angeles."]
-
-        Returns:
-            str: A JSON string representing a list of verification objects. Each
-                object contains the original 'claim', a 'classification' (e.g.,
-                'FAKE', 'TRUE'), a 'text_evidence_summary', and a 'final_decision'.
-                You must parse this JSON to extract the specific findings for your final answer.
-        """
+async def verifier_tool(
+    text_news: List[str],
+    image_path: List[str] = None,
+    save_to_vector_db: bool = True
+) -> str:
+    """Balle"""
     if image_path is None:
         image_path = []
     initial_state: AgentState = {
@@ -176,32 +196,5 @@ def verifier_tool(text_news: List[str], image_path: List[str] = None, save_to_ve
         "save_to_vector_db": save_to_vector_db,
         "verified_results": ""
     }
-    # CHANGED: Use .invoke() for synchronous graph execution
-    final_state = verifier_agent.invoke(initial_state)
+    final_state = await verifier_agent.ainvoke(initial_state)
     return final_state["verified_results"]
-
-
-# --- Test main ---
-def main():
-    claims = [
-        "The Eiffel Tower is located in Berlin.",
-        "The COVID-19 vaccine contains microchips for tracking.",
-        "Drinking water can cure cancer."
-    ]
-    # CHANGED: Await the async tool function
-    # 1. Group your arguments into a dictionary
-    tool_input = {
-        "text_news": claims, 
-        "image_path": [], 
-        "save_to_vector_db": False
-    }
-
-    # 2. Call the tool using .invoke() with the dictionary
-    final_results = verifier_tool.invoke(tool_input)
-    print("\n-> Final Verification Results:")
-    print(final_results)
-
-
-# CHANGED: Use asyncio.run() to execute the async main function
-if __name__ == "__main__":
-    main()

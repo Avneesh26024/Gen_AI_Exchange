@@ -63,6 +63,37 @@ def content_summarizer_prompt(content: str) -> str:
       to capture every necessary fact.
     """
 
+def title_url_inference_prompt(title: str, url: str) -> str:
+    """
+    Creates a prompt for an LLM to infer the content of an article
+    using only its title and URL.
+    """
+    return f"""
+    You are an expert Intelligence Analyst specializing in digital media. 
+    Your task is to infer the likely content and stance of a news article using ONLY its title and URL.
+
+    ### Input Data
+    - **Title:** "{title}"
+    - **URL:** "{url}"
+
+    ### Your Task
+    1.  **Analyze the Source:** Look at the domain name in the URL (e.g., reuters.com, dailymail.co.uk, a personal blog) to determine the likely bias, reliability, and tone (e.g., formal news, opinion, tabloid).
+    2.  **Analyze the Title:** Deconstruct the title to identify the key subjects, claims, and any emotionally charged language.
+    3.  **Synthesize:** Based on your analysis, write a brief, neutral, one-sentence summary of the probable main point of the article.
+    4.  **Do Not Hallucinate:** State your conclusion based *only* on the evidence from the title and URL. Do not invent facts or details. If the title is ambiguous, reflect that in your summary. Start your summary with "This article likely states that..." or "This article probably claims that...".
+
+    ### Output
+    Provide only the single-sentence summary.
+
+    **Example:**
+    Input:
+    - Title: "BREAKING: Market Plummets as Fed Announces Shock Interest Rate Hike"
+    - URL: "https://www.reuters.com/business/markets/fed-rate-hike-09-2025/"
+    Output:
+    This article likely states that the stock market has dropped significantly following an unexpected interest rate increase by the Federal Reserve.
+    """
+
+
 
 def retriever_prompt() -> List[str]:
     """
