@@ -9,6 +9,11 @@ from Retriever.Retriever_Agent import retriever_agent
 from Tools.Human_Response import human_response
 from langchain.prompts import ChatPromptTemplate
 
+
+###history
+###retriever
+
+
 # --- Model Configuration (Unchanged) ---
 safety_settings = {
     HarmCategory.HARM_CATEGORY_UNSPECIFIED: HarmBlockThreshold.BLOCK_NONE,
@@ -205,12 +210,11 @@ graph.add_node("condense_query", condense_query)
 graph.add_node("retrieve_context", retrieve_context)
 graph.add_node("synthesize_answer", synthesize_answer)
 graph.add_node("verify_claim", verify_and_respond)
-graph.add_node("handle_conversation", handle_conversation)  # Added new node
+graph.add_node("handle_conversation", handle_conversation) 
 
 graph.set_entry_point("router")
 graph.add_edge("router", "condense_query")
 
-# MODIFIED: Updated conditional routing to include the new conversational path
 graph.add_conditional_edges(
     "condense_query",
     decide_route,
@@ -233,7 +237,16 @@ graph.add_edge("synthesize_answer", END)
 graph.add_edge("verify_claim", END)
 graph.add_edge("handle_conversation", END)  # Added new end point
 
+<<<<<<< HEAD
 agent = graph.compile()
+=======
+agent = graph.compile(checkpointer=memory)
+
+
+
+
+
+>>>>>>> ac7e9d7 (Sync local files)
 agent.get_graph().print_ascii()
 
 # --- 5. Main Chat Loop (Unchanged) ---
@@ -251,6 +264,7 @@ if __name__ == "__main__":
             agent_input = {"messages": current_messages}
             final_state = agent.invoke(agent_input)
 
+<<<<<<< HEAD
             last_message = final_state["messages"][-1]
             print(f"Bot: {last_message.content}")
             initial_state = final_state
@@ -258,3 +272,15 @@ if __name__ == "__main__":
         print("\nInterrupted. Exiting.")
     except Exception as e:
         print(f"\nAn error occurred: {e}")
+=======
+#             last_message = final_state["messages"][-1]
+#             print(f"Bot: {last_message.content}")
+#             initial_state = final_state
+#     except KeyboardInterrupt:
+#         print("\nInterrupted. Exiting.")
+#     except Exception as e:
+#         print(f"\nAn error occurred: {e}")
+
+
+
+>>>>>>> ac7e9d7 (Sync local files)

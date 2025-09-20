@@ -1,0 +1,14 @@
+# This is the simple, correct file to use.
+# It tells Cloud Build to use your Dockerfile.
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args:
+    - 'build'
+    - '-t'
+    - 'us-central1-docker.pkg.dev/gen-ai-hackathon-470012/my-api-repo/my-fastapi-app:latest'
+    - '.'
+images:
+- 'us-central1-docker.pkg.dev/gen-ai-hackathon-470012/my-api-repo/my-fastapi-app:latest'
+options:
+  logging: CLOUD_LOGGING_ONLY
+

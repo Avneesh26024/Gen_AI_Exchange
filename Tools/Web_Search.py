@@ -45,7 +45,7 @@ async def web_search_tool(query: str) -> List[Dict[str, Any]]:
         return []
 
     # Create tasks to scrape each URL concurrently
-    scraping_tasks = [fetch_and_extract_content(item['link'], min_text_len=400) for item in search_results]
+    scraping_tasks = [fetch_and_extract_content(item['link'], min_text_len=200) for item in search_results]
     scraped_data = await asyncio.gather(*scraping_tasks)
 
     results = []
