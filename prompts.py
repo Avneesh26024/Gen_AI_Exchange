@@ -232,3 +232,46 @@ Output:
 
 Return ONLY one of: SUPPORTS, REFUTES, NO STANCE. No extra text.
 """
+
+# In prompts.py
+
+def validation_prompt(claim: str, retrieved_claims: list) -> str:
+    """
+    Creates a prompt to ask an LLM if a new claim is semantically identical
+    to any of the retrieved, already-verified claims.
+    """
+    # Format the retrieved claims for clear presentation in the prompt
+    retrieved_claims_str = "\n".join(
+        f'- ID {i+1}: "{c["text"]}" (Final Decision: "{c["filterable_restricts"].get("final_decision", ["N/A"])[0]}")'
+        for i, c in enumerate(retrieved_claims)
+    )
+
+    return f"""
+You are an AI validation assistant. Your task is to determine if the "New Claim" is semantically identical to any of the "Previously Verified Claims" found in our database. Semantically identical means they ask the same question or state the same fact, even if the wording is slightly different.
+
+### New Claim:
+"{claim}"
+
+### Previously Verified Claims:
+{retrieved_claims_str}
+
+### INSTRUCTIONS:
+1.  Carefully compare the "New Claim" to each of the "Previously Verified Claims".
+2.  If you find a claim that is a perfect semantic match, identify its ID.
+3.  Your response MUST be a single JSON object with the following structure:
+    {{
+      "match_found": boolean,
+      "matched_id": integer | null
+    }}
+4.  Set "match_found" to `true` if an identical claim exists, otherwise `false`.
+5.  If "match_found" is `true`, set "matched_id" to the corresponding integer ID (e.g., 1, 2, ...). Otherwise, set it to `null`.
+6.  Do not add any explanations or extra text outside of the JSON object.
+
+### Example Response:
+If Previously Verified Claim with ID 2 was a perfect match, you would return:
+```json
+{{
+  "match_found": true,
+  "matched_id": 2
+}}
+"""

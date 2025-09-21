@@ -217,7 +217,7 @@ if __name__ == '__main__':
 
     # --- TEST 1: Original Semantic Search (No Filters) ---
     print("\n\n<<<<< RUNNING TEST 1: SEMANTIC SEARCH ONLY >>>>>")
-    test_query_1 = "What are some fried Indian foods?"
+    test_query_1 = "The Eiffel Tower is located in Berlin."
     results_1 = retrieve_chunks(
         query_text=test_query_1,
         top_k=2,
@@ -233,8 +233,7 @@ if __name__ == '__main__':
     test_query_2 = "Tell me about a snack."
     # We are looking for something that is a "snack" AND a "street_food"
     metadata_filters = {
-        "dish_type": ["snack"],
-        "tags": ["street_food"]
+        "doc_type": "verified_claim",
     }
 
     results_2 = retrieve_chunks(

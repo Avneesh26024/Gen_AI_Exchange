@@ -100,6 +100,6 @@ def retriever_agent(query: str) -> Dict:
 
 if __name__ == "__main__":
     # Example usage
-    query = "drinking water can cure cancer"
+    query = "The Eiffel Tower is located in Berlin."
     result = retriever_agent(query)
     print(result)
