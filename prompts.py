@@ -1,50 +1,137 @@
 from typing import List
+import json
+# --- Schema Templates (Helper constants to keep the main function clean) ---
 
-def verifier_prompt(state):
-    return f"""
-    You are an expert Misinformation Classifier AI Agent.  
+TEXT_CLAIMS_SCHEMA = """
+  "text_claims": [
+    {
+      "claim": "The original text claim being verified.",
+      "classification": "REAL | FAKE | REAL with EDGE CASE",
+      "edge_case_notes": "A brief explanation if the classification is 'REAL with EDGE CASE'. Otherwise, this should be an empty string.",
+      "text_evidence_summary": "A 1-2 sentence summary of the web evidence for the text claim.",
+      "text_evidence_sources": [
+        {
+          "url": "Source URL",
+          "title": "Source Title",
+          "stance": "SUPPORTS | REFUTES | NO STANCE",
+          "credibility": 0.9
+        }
+      ],
+      "image_correlation": "Supports (Image X) | Contradicts (Image X) | No relevant evidence",
+      "confidence_score": -1.0,
+      "final_decision": "A final 1-2 sentence verdict on the claim."
+    }
+  ]
+"""
 
-    You will be given two types of information:  
-    1. **Text Claims with Evidence (including titles and URLs)**  
-    2. **Image Analysis Results (with Image Numbers, URLs, and Summarized Content)**  
+IMAGES_SCHEMA = """
+  "images": [
+    {
+      "image_id": 1,
+      "image_path": "path/to/image.jpg",
+      "ocr_text": "Text found in the image, if any.",
+      "labels": "Labels identified in the image.",
+      "caption": "AI-generated caption for the image.",
+      "image_evidence_summary": "A 1-2 sentence summary of the web evidence found for this image.",
+      "text_evidence_sources": [
+        {
+          "url": "Source URL",
+          "title": "Source Title",
+          "stance": "SUPPORTS | REFUTES | NO STANCE",
+          "credibility": 0.9
+        }
+      ],
+      "confidence_score": 0.9,
+      "final_decision": "A final 1-2 sentence conclusion about the image's context."
+    }
+  ]
+"""
 
-    ### Inputs
-    **Text Claims:**  
-    {state["text_with_evidence"]}  
 
-    **Image Analysis:**  
-    {state["image_analysis"]}  
-
-    ### Task
-    1. For each claim, classify into one of the following:  
-       - REAL → The claim is true and supported by evidence.  
-       - FAKE → The claim is false or contradicted by evidence.  
-       - REAL with EDGE CASE → The claim is mostly true but requires clarification, additional context, or has ambiguous elements.  
-
-    2. Correlate the image analysis with text claims **using image numbers**:  
-       - If an image supports a claim, mark as `"Supports (Image X)"`.  
-       - If an image contradicts a claim, mark as `"Contradicts (Image X)"`.  
-       - If no image is relevant, mark as `"No relevant evidence"`.  
-       - If multiple images are relevant, list them all (e.g., `"Supports (Image 1, Image 3)"`).  
-
-    3. Be objective and evidence-based. If evidence is insufficient, explicitly state `"Insufficient evidence"`.  
-    4. Keep each output field concise (**max 1–2 sentences**).  
-    5. Always include **citations (titles or URLs)** in `text_evidence_summary` so the source of evidence is clear.  
-
-    ### Output Format
-    Provide results in JSON-like structure:
-    [
-      {{
-        "claim": "...",
-        "classification": "REAL | FAKE | REAL with EDGE CASE",
-        "edge_case_notes": "... (short, optional if applicable)",
-        "text_evidence_summary": "... (short, include citations/URLs)",
-        "image_correlation": "Supports (Image X) | Contradicts (Image X) | No relevant evidence",
-        "final_decision": "... (short, 1 sentence)"
-      }},
-      ...
-    ]
+def verifier_prompt(state: dict) -> str:
     """
+    Dynamically generates the verifier prompt based on whether text claims,
+    images, or both are provided in the agent's state.
+    """
+    # --- 1. Check for the presence of text and image data ---
+    has_text = bool(state.get("text_with_evidence"))
+    has_images = bool(state.get("image_analysis"))
+
+    # --- 2. Dynamically build the sections of the prompt ---
+    input_sections = []
+    schema_sections = []
+    main_instructions = [
+        "You are an expert, impartial Fact-Checking AI Agent.",
+        "Your sole task is to synthesize the provided evidence into a structured JSON output.",
+        "Your entire response MUST be a single, valid JSON object without any markdown formatting (like ```json).",
+        "Be concise and objective in all summary and decision fields."
+    ]
+
+    # --- Case 1: Both Text and Images are provided ---
+    if has_text and has_images:
+        main_instructions.append(
+            "Analyze both text and image evidence. For each text claim, determine if any of the provided images correlate. "
+            "If an image is not relevant to any claim, you MUST state 'No relevant evidence' in the claim's `image_correlation` field."
+        )
+        # Input sections
+        text_evidence_str = json.dumps(state["text_with_evidence"], indent=2)
+        input_sections.append(f"#### 1. Text Claims and Collected Web Evidence:\n```json\n{text_evidence_str}\n```")
+        input_sections.append(f"#### 2. Image Analysis and Collected Web Evidence:\n```\n{state['image_analysis']}\n```")
+        # Schema sections
+        schema_sections.append(TEXT_CLAIMS_SCHEMA)
+        schema_sections.append(IMAGES_SCHEMA)
+
+    # --- Case 2: Only Text is provided ---
+    elif has_text and not has_images:
+        main_instructions.append(
+            "Only text claims were provided. Analyze the evidence for each claim and populate the `text_claims` section. "
+            "Since no images were provided, `image_correlation` MUST be 'No relevant evidence' for all claims and the `images` list MUST be empty."
+        )
+        # Input section
+        text_evidence_str = json.dumps(state["text_with_evidence"], indent=2)
+        input_sections.append(f"#### Text Claims and Collected Web Evidence:\n```json\n{text_evidence_str}\n```")
+        # Schema sections
+        schema_sections.append(TEXT_CLAIMS_SCHEMA)
+        schema_sections.append('"images": []') # Explicitly require an empty list
+
+    # --- Case 3: Only Images are provided ---
+    elif not has_text and has_images:
+        main_instructions.append(
+            "Only images were provided. Analyze the evidence for each image and populate the `images` section. "
+            "Since no text claims were provided, the `text_claims` list MUST be empty."
+        )
+        # Input section
+        input_sections.append(f"#### Image Analysis and Collected Web Evidence:\n```\n{state['image_analysis']}\n```")
+        # Schema sections
+        schema_sections.append('"text_claims": []') # Explicitly require an empty list
+        schema_sections.append(IMAGES_SCHEMA)
+
+    # --- Fallback Case: No input provided ---
+    else:
+        return '{"text_claims": [], "images": []}' # Return a valid empty JSON
+
+    # --- 3. Assemble the final prompt from the dynamic sections ---
+    final_instructions = "\n".join(f"- {inst}" for inst in main_instructions)
+    final_inputs = "\n\n".join(input_sections)
+    final_schema = ",\n".join(schema_sections)
+
+    return f"""
+### INSTRUCTIONS
+{final_instructions}
+
+---
+### EVIDENCE INPUT
+{final_inputs}
+
+---
+### REQUIRED JSON OUTPUT SCHEMA
+Your final output must conform exactly to this JSON structure.
+
+```json
+{{
+{final_schema}
+}}
+"""
 
 def content_summarizer_prompt(content: str) -> str:
     return f"""
@@ -124,3 +211,24 @@ Your goal is to use your tools to get a definitive classification for the user's
             ("user", "{messages}"),
         ]
     )
+
+def stance_prompt(claim: str, evidence: str) -> str:
+    return f"""
+You are an expert Stance Detection AI Agent.
+
+Claim:
+{claim}
+
+Evidence:
+{evidence}
+
+Task:
+Determine the stance of the evidence with respect to the claim.
+
+Output:
+- SUPPORTS → evidence clearly supports the claim
+- REFUTES → evidence clearly contradicts the claim
+- NO STANCE → evidence is neutral or unrelated
+
+Return ONLY one of: SUPPORTS, REFUTES, NO STANCE. No extra text.
+"""
