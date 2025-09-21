@@ -120,7 +120,7 @@ def final_answer_node(state: FullAgentState) -> FullAgentState:
         else:
             cached = state.get("already_verified", [])
             if cached:
-                summary = f"Regarding the claim '{cached[0]['claim']}', I found this in my knowledge base: {cached[0]['result']}"
+                summary = f"Regarding the claim '{cached[0]['claim']}', I found this in my knowledge base: {cached[0]['matched_claim']}"
             else:
                 summary = "Verification process completed, but no specific decision was found."
         state["chat_history"].append(summary)

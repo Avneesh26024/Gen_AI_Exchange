@@ -171,33 +171,25 @@ def router(state: AgentState) -> AgentState:
         retrieved_candidates = retrieve_chunks(claim, top_k=3, filters=filters)
         match_found = False
         if retrieved_candidates:
-            prompt = validation_prompt(claim, retrieved_candidates)
-            try:
-                # --- THIS IS THE CRITICAL LINE ---
-                # Ensure it uses 'validation_llm', not 'llm'
-                response = validation_llm.invoke(prompt)
-                # ---
-
-                validation_result = json.loads(response.content)
-
-                if validation_result.get("match_found"):
-                    matched_id = validation_result.get("matched_id")
-                    matched_claim_data = retrieved_candidates[matched_id - 1]
-
-                    matched_claim_text = matched_claim_data.get("text")
-                    source_urls = matched_claim_data["filterable_restricts"].get("source_urls", [])
+            # --- MODIFICATION FOR PROTOTYPING ---
+            # Instead of calling an LLM, we'll check for a high similarity score
+            # from the retriever as a proxy for a "match".
+            best_match = retrieved_candidates[0]
+            if best_match.get("distance", 0) > 0.95:  # Using distance as similarity score
+                try:
+                    matched_claim_text = best_match.get("text")
+                    source_urls = best_match["filterable_restricts"].get("source_urls", [])
 
                     if matched_claim_text and source_urls:
-                        print(f"✅ Cache HIT for claim: '{claim}'. Found similar claim: '{matched_claim_text}'")
+                        print(f"✅ Cache HIT for claim: '{claim}'. Found similar claim: '{matched_claim_text}' with score {best_match.get('distance')}")
                         verified_list.append({
                             "claim": claim,
                             "matched_claim": matched_claim_text,
                             "source_urls": source_urls
                         })
                         match_found = True
-
-            except (json.JSONDecodeError, IndexError, KeyError) as e:
-                print(f"⚠️ Error during LLM validation for claim '{claim}': {e}. Treating as unverified.")
+                except (IndexError, KeyError) as e:
+                    print(f"⚠️ Error processing high-similarity match for claim '{claim}': {e}. Treating as unverified.")
 
         if not match_found:
             print(f"❌ Cache MISS for claim: '{claim}'. Adding to verification queue.")
@@ -541,27 +533,27 @@ def verify_claims(state: AgentState) -> AgentState:
 
 
 # --- Define the new LINEAR graph ---
-# graph = StateGraph(AgentState)
+graph = StateGraph(AgentState)
 
 # Add all the nodes in sequence
-# graph.add_node("router", router)
-# graph.add_node("add_existing_evidence", add_existing_evidence)
-# graph.add_node("text_evidence_collection", text_evidence_collection)
-# graph.add_node("image_analysis", image_analysis)
-# graph.add_node("verify_claims", verify_claims)
-#
-# # Set the entry point to the router
-# graph.set_entry_point("router")
-#
-# # Define the linear flow of the graph
-# graph.add_edge("router", "add_existing_evidence")
-# graph.add_edge("add_existing_evidence", "text_evidence_collection")
-# graph.add_edge("text_evidence_collection", "image_analysis")
-# graph.add_edge("image_analysis", "verify_claims")
-# graph.add_edge("verify_claims", "__end__")
-#
-# # Compile the final agent
-# verifier_agent = graph.compile()
+graph.add_node("router", router)
+graph.add_node("add_existing_evidence", add_existing_evidence)
+graph.add_node("text_evidence_collection", text_evidence_collection)
+graph.add_node("image_analysis", image_analysis)
+graph.add_node("verify_claims", verify_claims)
+
+# Set the entry point to the router
+graph.set_entry_point("router")
+
+# Define the linear flow of the graph
+graph.add_edge("router", "add_existing_evidence")
+graph.add_edge("add_existing_evidence", "text_evidence_collection")
+graph.add_edge("text_evidence_collection", "image_analysis")
+graph.add_edge("image_analysis", "verify_claims")
+graph.add_edge("verify_claims", "__end__")
+
+# Compile the final agent
+verifier_agent = graph.compile()
 
 
 def save_results_to_cache(results: dict):
@@ -608,74 +600,74 @@ def save_results_to_cache(results: dict):
 
 # --- Tool wrapper ---
 # CHANGED: The tool wrapper is now a sync function
-# def verifier_tool(text_news: List[str], image_path: List[str] = None, save_to_vector_db: bool = False) -> str:
-#     """
-#     Fact-checks claims using web evidence and a caching layer.
-#     Saves new results back to the cache if save_to_vector_db is True.
-#     """
-#     if image_path is None:
-#         image_path = []
-#
-#     initial_state: AgentState = {
-#         "text_news": text_news,
-#         "text_with_evidence": "",
-#         "image_path": image_path,
-#         "already_verified": [],
-#         "unverified_claims": [],
-#         "image_analysis": "",
-#         "save_to_vector_db": save_to_vector_db,  # Pass this flag to the state
-#         "verified_results": ""
-#     }
-#
-#     # Run the agent graph
-#     final_state = verifier_agent.invoke(initial_state)
-#
-#     # --- NEW: SAVE TO CACHE LOGIC ---
-#     # After the agent runs, if the flag is set, save the new results.
-#     # We save the results from the 'verified_results' key, which contains the newly processed claims.
-#     if save_to_vector_db and final_state.get("verified_results"):
-#         # The 'verified_results' might be a dict or a JSON string depending on success
-#         results_to_cache = final_state["verified_results"]
-#         if isinstance(results_to_cache, str):
-#             try:
-#                 results_to_cache = json.loads(results_to_cache)
-#             except json.JSONDecodeError:
-#                 results_to_cache = {}  # Cannot parse, so cannot cache
-#
-#         if isinstance(results_to_cache, dict):
-#             save_results_to_cache(results_to_cache)
-#
-#     # --- MODIFIED: MERGE CACHED AND NEW RESULTS ---
-#     # The final output should combine the cached results and the new results
-#     final_output = {}
-#     cached_results = final_state.get("already_verified", [])
-#     new_results_dict = final_state.get("verified_results", {})
-#
-#     # Ensure new_results_dict is a dictionary
-#     if isinstance(new_results_dict, str):
-#         try:
-#             new_results_dict = json.loads(new_results_dict)
-#         except json.JSONDecodeError:
-#             new_results_dict = {"error": "Failed to parse new results.", "raw": new_results_dict}
-#
-#     final_output["cached_results"] = cached_results
-#     final_output["newly_verified_results"] = new_results_dict
-#
-#     return json.dumps(final_output, indent=2)
+def verifier_tool(text_news: List[str], image_path: List[str] = None, save_to_vector_db: bool = False) -> str:
+    """
+    Fact-checks claims using web evidence and a caching layer.
+    Saves new results back to the cache if save_to_vector_db is True.
+    """
+    if image_path is None:
+        image_path = []
+
+    initial_state: AgentState = {
+        "text_news": text_news,
+        "text_with_evidence": "",
+        "image_path": image_path,
+        "already_verified": [],
+        "unverified_claims": [],
+        "image_analysis": "",
+        "save_to_vector_db": save_to_vector_db,  # Pass this flag to the state
+        "verified_results": ""
+    }
+
+    # Run the agent graph
+    final_state = verifier_agent.invoke(initial_state)
+
+    # --- NEW: SAVE TO CACHE LOGIC ---
+    # After the agent runs, if the flag is set, save the new results.
+    # We save the results from the 'verified_results' key, which contains the newly processed claims.
+    if save_to_vector_db and final_state.get("verified_results"):
+        # The 'verified_results' might be a dict or a JSON string depending on success
+        results_to_cache = final_state["verified_results"]
+        if isinstance(results_to_cache, str):
+            try:
+                results_to_cache = json.loads(results_to_cache)
+            except json.JSONDecodeError:
+                results_to_cache = {}  # Cannot parse, so cannot cache
+
+        if isinstance(results_to_cache, dict):
+            save_results_to_cache(results_to_cache)
+
+    # --- MODIFIED: MERGE CACHED AND NEW RESULTS ---
+    # The final output should combine the cached results and the new results
+    final_output = {}
+    cached_results = final_state.get("already_verified", [])
+    new_results_dict = final_state.get("verified_results", {})
+
+    # Ensure new_results_dict is a dictionary
+    if isinstance(new_results_dict, str):
+        try:
+            new_results_dict = json.loads(new_results_dict)
+        except json.JSONDecodeError:
+            new_results_dict = {"error": "Failed to parse new results.", "raw": new_results_dict}
+
+    final_output["cached_results"] = cached_results
+    final_output["newly_verified_results"] = new_results_dict
+
+    return json.dumps(final_output, indent=2)
 
 # --- Test main ---
-# def main():
-#     claims = [
-#         "The Eiffel Tower is located in Berlin.",
-#         "The COVID-19 vaccine contains microchips for tracking.",
-#         # "Drinking water can cure cancer."
-#     ]
-#     # CHANGED: Await the async tool function
-#     final_results = verifier_tool(text_news=claims, image_path=[], save_to_vector_db=False)
-#     print("\n-> Final Verification Results:")
-#     print(final_results)
-#
-#
-# # CHANGED: Use asyncio.run() to execute the async main function
-# if __name__ == "__main__":
-#     main()
+def main():
+    claims = [
+        "The Eiffel Tower is located in Berlin.",
+        "The COVID-19 vaccine contains microchips for tracking.",
+        # "Drinking water can cure cancer."
+    ]
+    # CHANGED: Await the async tool function
+    final_results = verifier_tool(text_news=claims, image_path=[], save_to_vector_db=False)
+    print("\n-> Final Verification Results:")
+    print(final_results)
+
+
+# CHANGED: Use asyncio.run() to execute the async main function
+if __name__ == "__main__":
+    main()

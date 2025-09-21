@@ -207,38 +207,34 @@ def validation_prompt(claim: str, retrieved_claims: list) -> str:
     """
     # Format the retrieved claims for clear presentation in the prompt
     retrieved_claims_str = "\n".join(
-        f'- ID {i+1}: "{c["text"]}" (Final Decision: "{c["filterable_restricts"].get("final_decision", ["N/A"])[0]}")'
+        f'- ID {i+1}: "{c["text"]}"'
         for i, c in enumerate(retrieved_claims)
     )
 
     return f"""
-You are an AI validation assistant. Your task is to determine if the "New Claim" is semantically identical to any of the "Previously Verified Claims" found in our database. Semantically identical means they ask the same question or state the same fact, even if the wording is slightly different.
+You are a semantic comparison AI. Your only job is to check for a semantic match between a new claim and a list of existing claims.
 
 ### New Claim:
 "{claim}"
 
-### Previously Verified Claims:
+### Existing Claims:
 {retrieved_claims_str}
 
-### INSTRUCTIONS:
-1.  Carefully compare the "New Claim" to each of the "Previously Verified Claims".
-2.  If you find a claim that is a perfect semantic match, identify its ID.
-3.  Your response MUST be a single JSON object with the following structure:
-    {{
-      "match_found": boolean,
-      "matched_id": integer | null
-    }}
-4.  Set "match_found" to `true` if an identical claim exists, otherwise `false`.
-5.  If "match_found" is `true`, set "matched_id" to the corresponding integer ID (e.g., 1, 2, ...). Otherwise, set it to `null`.
-6.  Do not add any explanations or extra text outside of the JSON object.
+### Your Task:
+Compare the "New Claim" to each "Existing Claim".
+If you find a claim that means the exact same thing, respond with a JSON object indicating a match and the ID of the matched claim.
+If no claims are semantically identical, respond with a JSON object indicating no match.
 
-### Example Response:
-If Previously Verified Claim with ID 2 was a perfect match, you would return:
-```json
+Your entire response MUST be a single, valid JSON object. Do not include any other text.
+
+The JSON object must have this structure:
 {{
-  "match_found": true,
-  "matched_id": 2
+  "match_found": boolean,
+  "matched_id": integer | null
 }}
+
+- If a match is found, set "match_found" to true and "matched_id" to the correct ID.
+- If no match is found, set "match_found" to false and "matched_id" to null.
 """
 
 
