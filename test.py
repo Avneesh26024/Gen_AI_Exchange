@@ -1,5 +1,5 @@
 from logging import lastResort
-from Verifier_Agent import verifier_tool
+from nodes import verifier_tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage

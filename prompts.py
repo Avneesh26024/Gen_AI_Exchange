@@ -175,42 +175,7 @@ def retriever_prompt() -> List[str]:
     ]
 
 
-from langchain_core.prompts import ChatPromptTemplate
 
-def main_prompt() -> ChatPromptTemplate:
-    """
-    Creates the prompt for the ReAct agent, which is now specialized
-    for verifying new claims.
-    """
-    return ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                """You are a specialized **AI Fact-Checker**.
-Your sole purpose is to verify new, unverified claims presented by a user. You have been activated because the initial query was identified as a new claim requiring verification.
-
-### Your Workflow:
-Your goal is to use your tools to get a definitive classification for the user's claim.
-
-1.  **Assess the Claim**: Analyze the user's latest message, which contains the claim to be verified.
-2.  **Verify or Clarify**:
-    * If the claim is clear and specific, your primary action is to use the `verifier_tool` to get a final classification.
-    * If the claim is ambiguous, vague, or missing crucial information (like a link for an article), you **must** use the `human_response` tool to ask the user for the necessary details.
-
-### Your Tools:
-- `verifier_tool`: The only tool that can provide a final classification of a claim.
-- `human_response`: Use this to ask the user for clarification.
-
-### Core Directives:
-- **Your ONLY job is to verify this specific claim.** Do not engage in general conversation.
-- **NEVER classify a claim yourself.** Your final answer must come from the output of the `verifier_tool`.
-- **Do not assume context.** If you need more information, ask the user.
-""",
-            ),
-            # The 'messages' placeholder will be filled by the ReAct agent with the conversation history.
-            ("user", "{messages}"),
-        ]
-    )
 
 def stance_prompt(claim: str, evidence: str) -> str:
     return f"""
@@ -275,3 +240,49 @@ If Previously Verified Claim with ID 2 was a perfect match, you would return:
   "matched_id": 2
 }}
 """
+
+
+def checker_prompt(chat: str, query: str) -> str:
+    """
+    Creates a prompt to classify the user's intent for routing.
+    """
+    return f"""
+    You are an AI agent responsible for routing user queries in a misinformation-checker system.
+    Your task is to classify the user's query into one of the following categories based on the conversation history.
+
+    1.  **VERIFY**: The query is a new, distinct claim that needs to be fact-checked. It's not a direct follow-up or a request for sources.
+    2.  **RETRIEVE_EVIDENCE**: The query explicitly asks for sources, evidence, proof, or "how do you know" regarding a claim that has already been discussed.
+    3.  **FINAL_ANSWER**: The query is a simple follow-up question that can be answered directly from the information already present in the chat history (e.g., "what did you just say?").
+    4.  **AMBIGUOUS**: The query is unclear, could refer to multiple topics, or it's not obvious what the user is asking for in the context of fact-checking.
+
+    Here's the chat history:
+    {chat}
+
+    Here's the user's query:
+    {query}
+
+    Respond with ONLY one of the following classifications: VERIFY, RETRIEVE_EVIDENCE, FINAL_ANSWER, or AMBIGUOUS.
+"""
+
+
+def final_answer_prompt(chat_history: list, retrieved_evidence: list = None) -> str:
+    """
+    Creates a prompt to generate a final, conversational answer for the user.
+    """
+    prompt = f"""
+    You are a helpful and polite fact-checking assistant. Based on the following conversation history and any retrieved evidence, please provide a concise and helpful answer to the last user query.
+
+    If retrieved evidence is provided, use it to answer questions about sources or proof by summarizing the key sources.
+
+    Chat History:
+    {json.dumps(chat_history, indent=2)}
+    """
+
+    if retrieved_evidence:
+        prompt += f"""
+    \nRetrieved Evidence (Use this to answer questions about sources):
+    {json.dumps(retrieved_evidence, indent=2)}
+    """
+
+    prompt += "\n\nAnswer the last user query in a clear, conversational way."
+    return prompt
